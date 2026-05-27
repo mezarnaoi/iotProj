@@ -1,0 +1,54 @@
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Wire.h>
+
+Adafruit_MPU6050 mpu;
+
+// Setam frecventa la aprox 100Hz, la fel ca in laborator
+const uint32_t SAMPLE_PERIOD_MS = 10; 
+uint32_t lastSampleMs = 0;
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) { delay(10); }
+
+  if (!mpu.begin()) {
+    Serial.println("# EROARE: MPU6050 nu a fost gasit!");
+    while (1) { delay(10); }
+  }
+
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+  Serial.println("# RideGuard - MPU6050 Logger pregatit");
+  Serial.println("# Format CSV asteptat: millis,ax_g,ay_g,az_g,label");
+}
+
+void loop() {
+  uint32_t now = millis();
+  
+  // Citim datele la fiecare 10ms (100Hz)
+  if (now - lastSampleMs >= SAMPLE_PERIOD_MS) {
+    lastSampleMs = now;
+
+    sensors_event_t a, g, temp;
+    mpu.getEvent(&a, &g, &temp);
+
+    // Transformam din m/s^2 in G (unitatea folosita de modelul din laborator)
+    float ax_g = a.acceleration.x / 9.81;
+    float ay_g = a.acceleration.y / 9.81;
+    float az_g = a.acceleration.z / 9.81;
+
+    // Printam cele 5 valori fix in ordinea asteptata de scriptul Python:
+    // Timp, AccelX, AccelY, AccelZ, Label_Fals
+    Serial.print(now);        Serial.print(",");
+    Serial.print(ax_g, 4);    Serial.print(",");
+    Serial.print(ay_g, 4);    Serial.print(",");
+    Serial.print(az_g, 4);    Serial.print(",");
+    
+    // Trimitem un 0 la final pe post de "label". 
+    // Nu conteaza valoarea, scriptul Python de laborator il va inlocui automat
+    // cu 0 (stationary) sau 1 (shaking) din linia de comanda.
+    Serial.println(0); 
+  }
+}
