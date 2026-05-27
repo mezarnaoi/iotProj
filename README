@@ -1,0 +1,228 @@
+================================================================
+  RIDEGUARD PRO — DOCUMENTATIE TEHNICA
+  Sistem inteligent de detectie a accidentelor pentru casca moto
+================================================================
+
+----------------------------------------------------------------
+1. PREZENTARE GENERALA
+----------------------------------------------------------------
+
+RideGuard Pro este un sistem embedded de siguranta activa pentru
+motociclisti, compus dintr-o unitate hardware montata pe casca si
+o aplicatie mobila Flutter pentru Android.
+
+Sistemul monitorizeaza in timp real miscarile bruste ale castii
+folosind un accelerometru si un model de machine learning. La
+detectarea unui impact, aplicatia porneste un numaratoare inversa
+de 15 secunde. Daca motociclistul nu anuleaza alarma, se trimite
+automat o alerta cu coordonatele GPS ale locatiei impactului.
+
+
+----------------------------------------------------------------
+2. ARHITECTURA SISTEMULUI
+----------------------------------------------------------------
+
+  [MPU6050] --I2C--> [ESP32] --BLE--> [Telefon Android]
+  [NEO-6M]  --UART->    |                    |
+                        |              [Aplicatie Flutter]
+                   [Model ML]                |
+                                     [Discord Webhook]
+                                     [Google Maps]
+
+
+----------------------------------------------------------------
+3. COMPONENTE HARDWARE
+----------------------------------------------------------------
+
+3.1 Microcontroler — ESP32
+  - Procesor: Xtensa LX6 dual-core, 240 MHz
+  - Memorie: 520 KB SRAM
+  - Conectivitate: Wi-Fi 802.11 b/g/n, Bluetooth 4.2 BLE
+  - Tensiune de operare: 3.3V
+  - Rol: proceseaza datele senzorilor, ruleaza modelul ML,
+         gestioneaza comunicatia BLE si parseaza datele GPS
+
+3.2 Accelerometru/Giroscop — MPU6050
+  - Interfata: I2C
+  - Pini conectati: SDA -> GPIO21, SCL -> GPIO22
+  - Alimentare: 3.3V
+  - Configuratie: range accelerometru ±8G, filtru 21 Hz
+  - Rol: masoara acceleratia pe 3 axe pentru detectia impactului
+
+3.3 Modul GPS — NEO-6M
+  - Interfata: UART (Serial2)
+  - Pini conectati: TX (GPS) -> GPIO16 (RX2), RX (GPS) -> GPIO17 (TX2)
+  - Baud rate: 9600
+  - Alimentare: 3.3V
+  - Rol: furnizeaza coordonate GPS (latitudine, longitudine)
+
+
+----------------------------------------------------------------
+4. FIRMWARE ESP32
+----------------------------------------------------------------
+
+4.1 Biblioteci utilizate
+  - Adafruit_MPU6050     : driver senzor accelerometru
+  - TinyGPS++            : parsare NMEA sentences de la NEO-6M
+  - BLEDevice / BLEServer: stack Bluetooth Low Energy
+  - Arduino.h / Wire.h  : framework de baza
+
+4.2 Parametri de esantionare ML
+  - SAMPLE_PERIOD_MS : 10 ms (100 Hz)
+  - WINDOW_SIZE      : definit in model.h
+  - STEP_SIZE        : definit in model.h
+
+4.3 Pipeline de detectie impact
+  Pas 1: Citire date accelerometru la 100 Hz
+  Pas 2: Calculare magnitudine vectorului de acceleratie
+           mag = sqrt(ax^2 + ay^2 + az^2)
+  Pas 3: Stocare in buffer circular de dimensiune WINDOW_SIZE
+  Pas 4: La fiecare STEP_SIZE esantioane, extragere features:
+           - mean_mag  : media magnitudinilor din fereastra
+           - std_mag   : deviatia standard
+           - p2p_mag   : peak-to-peak (max - min)
+  Pas 5: Aplicare model de regresie logistica:
+           decision = W0 + W1*mean + W2*std + W3*p2p
+           prob = 1 / (1 + e^(-decision))
+  Pas 6: Daca prob > 0.85 SI p2p > 2.5 -> IMPACT DETECTAT
+
+4.4 Protocol BLE
+  Nume dispozitiv  : RideGuard_Helmet
+  Service UUID     : 4fafc201-1fb5-459e-8fcc-c5c9c331914b
+
+  Caracteristica 1 — Canal Accident
+    UUID           : beb5483e-36e1-4688-b7f5-ea07361b26a8
+    Proprietati    : READ, NOTIFY, WRITE
+    Valori         : "1" = impact detectat / "0" = resetat
+
+  Caracteristica 2 — Canal GPS
+    UUID           : 12345678-1234-5678-1234-56789abcdef0
+    Proprietati    : READ, NOTIFY, WRITE
+    Format date    : "latitudine,longitudine" (ex: "44.426767,26.102538")
+    Actualizare    : la fiecare fix GPS valid de la NEO-6M
+
+
+----------------------------------------------------------------
+5. APLICATIA MOBILA — FLUTTER
+----------------------------------------------------------------
+
+5.1 Informatii generale
+  - Framework     : Flutter (Dart)
+  - Platform      : Android
+  - Tema          : Dark mode, accent rosu
+
+5.2 Pachete utilizate
+  - flutter_blue_plus   : comunicatie Bluetooth Low Energy
+  - permission_handler  : gestionare permisiuni Android runtime
+  - http                : trimitere alerta Discord (POST webhook)
+  - shared_preferences  : persistenta contact de urgenta
+  - url_launcher        : deschidere Google Maps cu coordonate GPS
+
+5.3 Structura interfata
+  Tab 1 — Status (Dashboard)
+    - Indicator conectare BLE (CONECTAT / DECONECTAT / RECONECTARE)
+    - Ecran normal: buton conectare, status GPS, iconita securitate
+    - Ecran crash: alerta rosie, numaratoare inversa animata (cerc),
+                   buton anulare SOS, confirmare trimitere alerta
+
+  Tab 2 — Telemetrie
+    - Card viteza (rezervat, valoare 0 la demo)
+    - Card status senzor MPU6050
+    - Coordonate GPS live (LAT / LNG cu 6 zecimale)
+    - Buton "Deschide in Google Maps" (vizibil doar cu semnal GPS)
+
+  Tab 3 — Contact SOS
+    - Camp nume contact de urgenta
+    - Camp numar de telefon
+    - Buton salvare (persista prin reporniri ale aplicatiei)
+
+5.4 Flux detectie si alerta
+  1. ESP32 detecteaza impact -> trimite "1" pe canalul BLE Accident
+  2. Aplicatia primeste notificarea BLE
+  3. Se activeaza ecranul de crash, porneste countdown 15 secunde
+  4. Daca utilizatorul NU apasa "SUNT OK":
+       -> Se trimite POST la Discord webhook cu:
+          - Mesaj de alerta
+          - Coordonate GPS (latitudine, longitudine)
+          - Numele contactului de urgenta
+  5. Daca utilizatorul apasa "SUNT OK":
+       -> Se anuleaza countdown-ul
+       -> Se trimite "0" inapoi la ESP32 pe canalul BLE
+       -> Se reseteaza interfata
+
+5.5 Auto-reconectare BLE
+  - La deconectarea castii, aplicatia intra automat in mod
+    de reconectare (indicator portocaliu pe dashboard)
+  - Incearca reconectarea la fiecare 3 secunde
+  - Nu necesita interventie manuala din partea utilizatorului
+
+5.6 Permisiuni Android (AndroidManifest.xml)
+  - BLUETOOTH, BLUETOOTH_ADMIN
+  - BLUETOOTH_SCAN (neverForLocation), BLUETOOTH_CONNECT
+  - ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION
+  - INTERNET
+  - Bloc <queries> pentru url_launcher (scheme: https, geo)
+
+
+----------------------------------------------------------------
+6. CONFIGURARE SI INSTALARE
+----------------------------------------------------------------
+
+6.1 Firmware ESP32
+  1. Instaleaza PlatformIO sau Arduino IDE
+  2. Adauga bibliotecile: Adafruit MPU6050, TinyGPS++,
+     ESP32 BLE Arduino
+  3. Asigura-te ca fisierul model.h cu greutatile modelului
+     ML (W0, W1, W2, W3, WINDOW_SIZE, STEP_SIZE) este prezent
+  4. Compileaza si flash-uieste pe ESP32
+  5. Conecteaza hardware conform schemei electrice (sectiunea 7)
+
+6.2 Aplicatie Flutter
+  1. Instaleaza Flutter SDK
+  2. Ruleaza: flutter pub get
+  3. Conecteaza telefon Android cu USB debugging activat
+  4. Ruleaza: flutter run
+  Sau genereaza APK: flutter build apk --release
+
+6.3 Prima utilizare
+  1. Porneste ESP32 (alimenteaza casca)
+  2. Deschide aplicatia pe telefon
+  3. Tab Status -> apasa "Conecteaza prin BLE"
+  4. Aplicatia gaseste automat "RideGuard_Helmet"
+  5. Seteaza contactul de urgenta in Tab Contact SOS
+  6. Asteapta semnal GPS (LED sau mesaj "Conexiune Satelit Stabila")
+
+
+----------------------------------------------------------------
+7. SCHEMA ELECTRICA — REZUMAT CONEXIUNI
+----------------------------------------------------------------
+
+ESP32 <-> MPU6050
+  ESP32 3.3V  -> MPU6050 VCC
+  ESP32 GND   -> MPU6050 GND
+  ESP32 GPIO21 -> MPU6050 SDA
+  ESP32 GPIO22 -> MPU6050 SCL
+
+ESP32 <-> NEO-6M GPS
+  ESP32 3.3V  -> NEO-6M VCC
+  ESP32 GND   -> NEO-6M GND
+  ESP32 GPIO16 (RX2) -> NEO-6M TX
+  ESP32 GPIO17 (TX2) -> NEO-6M RX
+
+
+----------------------------------------------------------------
+8. LIMITARI CUNOSCUTE
+----------------------------------------------------------------
+
+  - Viteza in tab-ul Telemetrie afiseaza intotdeauna 0 km/h
+    (datele de viteza de la GPS nu sunt implementate in firmware)
+  - Aplicatia nu are notificari push cand ruleaza in background
+  - Alertele SOS sunt trimise doar prin Discord webhook;
+    nu exista integrare SMS sau apel telefonic
+  - Modelul ML a fost antrenat pe date simulate; precizia
+    in conditii reale poate varia
+
+
+================================================================
+  END OF DOCUMENT
+================================================================
